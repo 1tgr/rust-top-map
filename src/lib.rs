@@ -40,33 +40,6 @@ enum Index {
     Rest,
 }
 
-impl Index {
-    fn from_key<Key, Value>(top_count: usize, top: &VecDeque<Option<(Key, Value)>>, key: Key) -> Self
-    where
-        Key: Copy,
-        isize: From<Key>,
-    {
-        let index = if let Some(ref min_entry) = top.front() {
-            let (min_key, _) = min_entry.as_ref().expect("top entry should be filled");
-            isize::from(key) - isize::from(*min_key)
-        } else {
-            0
-        };
-
-        if let Some(index) = positive(index) {
-            if index >= top_count {
-                Index::Rest
-            } else {
-                Index::InsideTop { index }
-            }
-        } else {
-            Index::AboveTop {
-                distance: -index as usize,
-            }
-        }
-    }
-}
-
 pub enum Entry<'a, Key: 'a, Value: 'a> {
     Vec(Key, &'a mut Option<(Key, Value)>),
     BTreeMap(btree_map::Entry<'a, Key, Value>),
@@ -120,8 +93,29 @@ where
             .chain(self.rest.iter_mut().map(|(key, value)| (*key, value)))
     }
 
+    fn index(&self, key: Key) -> Index {
+        let index = if let Some(ref min_entry) = self.top.front() {
+            let &(min_key, _) = min_entry.as_ref().expect("top entry should be filled");
+            isize::from(key) - isize::from(min_key)
+        } else {
+            0
+        };
+
+        if let Some(index) = positive(index) {
+            if index >= self.top_count {
+                Index::Rest
+            } else {
+                Index::InsideTop { index }
+            }
+        } else {
+            Index::AboveTop {
+                distance: -index as usize,
+            }
+        }
+    }
+
     pub fn entry(&mut self, key: Key) -> Entry<Key, Value> {
-        match Index::from_key(self.top_count, &self.top, key) {
+        match self.index(key) {
             Index::AboveTop { distance } => {
                 let new_count = positive(self.top_count as isize - distance as isize).unwrap_or(0);
                 for entry in self.top.drain(new_count..) {
@@ -147,7 +141,7 @@ where
     }
 
     pub fn get(&self, key: Key) -> Option<&Value> {
-        match Index::from_key(self.top_count, &self.top, key) {
+        match self.index(key) {
             Index::AboveTop { distance: _ } => None,
             Index::InsideTop { index } => Some(&self.top.get(index)?.as_ref()?.1),
             Index::Rest => self.rest.get(&key),
@@ -155,7 +149,7 @@ where
     }
 
     pub fn get_mut(&mut self, key: Key) -> Option<&mut Value> {
-        match Index::from_key(self.top_count, &self.top, key) {
+        match self.index(key) {
             Index::AboveTop { distance: _ } => None,
             Index::InsideTop { index } => Some(&mut self.top.get_mut(index)?.as_mut()?.1),
             Index::Rest => self.rest.get_mut(&key),
@@ -163,7 +157,7 @@ where
     }
 
     pub fn insert(&mut self, key: Key, value: Value) -> Option<Value> {
-        match Index::from_key(self.top_count, &self.top, key) {
+        match self.index(key) {
             Index::AboveTop { distance } => {
                 let new_count = positive(self.top_count as isize - distance as isize).unwrap_or(0);
                 for entry in self.top.drain(new_count..) {
@@ -193,7 +187,7 @@ where
     }
 
     pub fn remove(&mut self, key: Key) -> Option<Value> {
-        match Index::from_key(self.top_count, &self.top, key) {
+        match self.index(key) {
             Index::AboveTop { distance: _ } => None,
 
             Index::InsideTop { index } => {
@@ -227,7 +221,7 @@ where
                             }
 
                             let rest_value = self.rest.remove(&rest_key).unwrap();
-                            mem::replace(&mut self.top[rest_index], Some((rest_key, rest_value)));
+                            self.top[rest_index] = Some((rest_key, rest_value));
                         }
                     }
                 }
