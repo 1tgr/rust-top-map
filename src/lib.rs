@@ -41,6 +41,12 @@ enum Index {
 }
 
 pub enum Entry<'a, Key: 'a, Value: 'a> {
+    AboveTop {
+        key: Key,
+        map: &'a mut TopMap<Key, Value>,
+        distance: usize,
+    },
+
     Vec(Key, &'a mut Option<(Key, Value)>),
     BTreeMap(btree_map::Entry<'a, Key, Value>),
 }
@@ -51,6 +57,11 @@ where
 {
     fn insert(self, value: Value) -> Option<Value> {
         match self {
+            Entry::AboveTop { key, map, distance } => {
+                *map.insert_above_top(distance) = Some((key, value));
+                None
+            }
+
             Entry::Vec(key, entry) => Some(mem::replace(entry, Some((key, value)))?.1),
             Entry::BTreeMap(btree_map::Entry::Occupied(mut entry)) => Some(entry.insert(value)),
 
@@ -63,6 +74,10 @@ where
 
     pub fn or_insert(self, default: Value) -> &'a mut Value {
         match self {
+            Entry::AboveTop { key, map, distance } => {
+                &mut map.insert_above_top(distance).get_or_insert((key, default)).1
+            }
+
             Entry::Vec(key, entry) => &mut entry.get_or_insert((key, default)).1,
             Entry::BTreeMap(entry) => entry.or_insert(default),
         }
@@ -70,6 +85,10 @@ where
 
     pub fn or_insert_with<F: FnOnce() -> Value>(self, default: F) -> &'a mut Value {
         match self {
+            Entry::AboveTop { key, map, distance } => {
+                &mut map.insert_above_top(distance).get_or_insert_with(|| (key, default())).1
+            }
+
             Entry::Vec(key, entry) => &mut entry.get_or_insert_with(|| (key, default())).1,
             Entry::BTreeMap(entry) => entry.or_insert_with(default),
         }
@@ -91,6 +110,26 @@ fn ensure_index<T>(v: &mut VecDeque<Option<T>>, index: usize) -> &mut Option<T> 
     }
 
     &mut v[index]
+}
+
+impl<Key, Value> TopMap<Key, Value>
+where
+    Key: Ord,
+{
+    fn insert_above_top(&mut self, distance: usize) -> &mut Option<(Key, Value)> {
+        if let Some(new_count) = self.top_count.checked_sub(distance) {
+            self.rest.extend(self.top.drain(new_count..).filter_map(|entry| entry));
+
+            for _ in 0..distance {
+                self.top.push_front(None);
+            }
+        } else {
+            self.rest.extend(self.top.drain(..).filter_map(|entry| entry));
+        }
+
+        self.top.push_front(None);
+        &mut self.top[0]
+    }
 }
 
 impl<Key, Value> TopMap<Key, Value>
@@ -139,20 +178,11 @@ where
 
     pub fn entry(&mut self, key: Key) -> Entry<Key, Value> {
         match self.index(key) {
-            Index::AboveTop { distance } => {
-                if let Some(new_count) = self.top_count.checked_sub(distance) {
-                    self.rest.extend(self.top.drain(new_count..).filter_map(|entry| entry));
-
-                    for _ in 0..distance {
-                        self.top.push_front(None);
-                    }
-                } else {
-                    self.rest.extend(self.top.drain(..).filter_map(|entry| entry));
-                }
-
-                self.top.push_front(None);
-                Entry::Vec(key, &mut self.top[0])
-            }
+            Index::AboveTop { distance } => Entry::AboveTop {
+                key,
+                map: self,
+                distance,
+            },
 
             Index::InsideTop { index } => Entry::Vec(key, ensure_index(&mut self.top, index)),
             Index::Rest => Entry::BTreeMap(self.rest.entry(key)),
