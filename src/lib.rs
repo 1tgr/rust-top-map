@@ -5,12 +5,11 @@ use std::collections::{BTreeMap, VecDeque};
 use std::collections::btree_map;
 use std::fmt;
 use std::mem;
-use std::num::NonZeroUsize;
 use std::ops;
 
 pub struct TopMap<Key, Value> {
     top_count: usize,
-    first_key: Option<Key>,
+    first: Option<(Key, Value)>,
     top: VecDeque<Option<(Key, Value)>>,
     rest: BTreeMap<Key, Value>,
 }
@@ -22,7 +21,7 @@ where
     pub fn new(top_count: usize) -> Self {
         Self {
             top_count,
-            first_key: None,
+            first: None,
             top: VecDeque::new(),
             rest: BTreeMap::new(),
         }
@@ -40,7 +39,7 @@ fn positive(i: isize) -> Option<usize> {
 enum Index {
     AboveTop { distance: usize },
     First,
-    InsideTop { index: NonZeroUsize },
+    InsideTop { index: usize },
     Rest,
 }
 
@@ -49,12 +48,6 @@ pub enum Entry<'a, Key: 'a, Value: 'a> {
         key: Key,
         map: &'a mut TopMap<Key, Value>,
         distance: usize,
-    },
-
-    First {
-        key: Key,
-        first_key: &'a mut Option<Key>,
-        entry: &'a mut Option<(Key, Value)>,
     },
 
     Vec {
@@ -72,14 +65,8 @@ where
     fn insert(self, value: Value) -> Option<Value> {
         match self {
             Entry::AboveTop { key, map, distance } => {
-                map.first_key = Some(key);
                 *map.insert_above_top(distance) = Some((key, value));
                 None
-            }
-
-            Entry::First { key, first_key, entry } => {
-                *first_key = Some(key);
-                Some(mem::replace(entry, Some((key, value)))?.1)
             }
 
             Entry::Vec { key, entry } => Some(mem::replace(entry, Some((key, value)))?.1),
@@ -95,13 +82,7 @@ where
     pub fn or_insert(self, default: Value) -> &'a mut Value {
         match self {
             Entry::AboveTop { key, map, distance } => {
-                map.first_key = Some(key);
                 &mut map.insert_above_top(distance).get_or_insert((key, default)).1
-            }
-
-            Entry::First { key, first_key, entry } => {
-                *first_key = Some(key);
-                &mut entry.get_or_insert((key, default)).1
             }
 
             Entry::Vec { key, entry } => &mut entry.get_or_insert((key, default)).1,
@@ -112,13 +93,7 @@ where
     pub fn or_insert_with<F: FnOnce() -> Value>(self, default: F) -> &'a mut Value {
         match self {
             Entry::AboveTop { key, map, distance } => {
-                map.first_key = Some(key);
                 &mut map.insert_above_top(distance).get_or_insert_with(|| (key, default())).1
-            }
-
-            Entry::First { key, first_key, entry } => {
-                *first_key = Some(key);
-                &mut entry.get_or_insert_with(|| (key, default())).1
             }
 
             Entry::Vec { key, entry } => &mut entry.get_or_insert_with(|| (key, default())).1,
@@ -129,7 +104,8 @@ where
 
 impl<Key, Value> TopMap<Key, Value> {
     pub fn len(&self) -> usize {
-        self.top.iter().filter(|&entry| entry.is_some()).count() + self.rest.len()
+        (if self.first.is_some() { 1 } else { 0 }) + self.top.iter().filter(|&entry| entry.is_some()).count()
+            + self.rest.len()
     }
 }
 
@@ -159,8 +135,8 @@ where
             self.rest.extend(self.top.drain(..).filter_map(|entry| entry));
         }
 
-        self.top.push_front(None);
-        &mut self.top[0]
+        self.first = None;
+        &mut self.first
     }
 }
 
@@ -188,7 +164,7 @@ where
     }
 
     fn index(&self, key: Key) -> Index {
-        let index = if let Some(first_key) = self.first_key {
+        let index = if let &Some((first_key, _)) = &self.first {
             isize::from(key) - isize::from(first_key)
         } else {
             0
@@ -197,8 +173,8 @@ where
         if let Some(index) = positive(index) {
             if index >= self.top_count {
                 Index::Rest
-            } else if let Some(index) = NonZeroUsize::new(index) {
-                Index::InsideTop { index }
+            } else if index > 0 {
+                Index::InsideTop { index: index - 1 }
             } else {
                 Index::First
             }
@@ -209,25 +185,27 @@ where
         }
     }
 
-    fn remove_end(&mut self, index: usize) -> Option<Value> {
-        let (_, value) = self.top.remove(index)??;
+    fn remove_end(&mut self, first: bool) -> Option<Value> {
+        let value = if first {
+            let (_, value) = mem::replace(&mut self.first, self.top.pop_front()?)?;
 
-        if index == 0 {
             while let Some(None) = self.top.front() {
                 self.top.pop_front();
             }
 
-            self.first_key = self.top.front().map(|entry| entry.as_ref().unwrap().0);
-        }
+            value
+        } else {
+            let (_, value) = self.top.pop_back()??;
+            value
+        };
 
-        let first_key = if let Some(first_key) = self.first_key {
+        let first_key = if let &Some((first_key, _)) = &self.first {
             Some(first_key)
         } else if let Some((&rest_key, _)) = self.rest.iter().next() {
             assert!(self.top.is_empty());
 
             let rest_value = self.rest.remove(&rest_key).unwrap();
-            self.top.push_front(Some((rest_key, rest_value)));
-            self.first_key = Some(rest_key);
+            self.first = Some((rest_key, rest_value));
             Some(rest_key)
         } else {
             None
@@ -236,7 +214,9 @@ where
         if let Some(first_key) = first_key {
             while let Some((&key, _)) = self.rest.iter().next() {
                 let index = positive(isize::from(key) - isize::from(first_key))
-                    .expect("everything in the rest map should have an index higher than everything in the top vec");
+                    .expect("everything in the rest map should have an index higher than everything in the top vec")
+                    .checked_sub(1)
+                    .expect("item with index=0 found in rest but we thought we already removed that");
 
                 if index >= self.top_count {
                     break;
@@ -258,15 +238,14 @@ where
                 distance,
             },
 
-            Index::First => Entry::First {
+            Index::First => Entry::Vec {
                 key,
-                first_key: &mut self.first_key,
-                entry: ensure_index(&mut self.top, 0),
+                entry: &mut self.first,
             },
 
             Index::InsideTop { index } => Entry::Vec {
                 key,
-                entry: ensure_index(&mut self.top, index.get()),
+                entry: ensure_index(&mut self.top, index),
             },
 
             Index::Rest => Entry::BTreeMap(self.rest.entry(key)),
@@ -276,8 +255,8 @@ where
     pub fn get(&self, key: Key) -> Option<&Value> {
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
-            Index::First => Some(&self.top.front()?.as_ref()?.1),
-            Index::InsideTop { index } => Some(&self.top.get(index.get())?.as_ref()?.1),
+            Index::First => Some(&self.first.as_ref()?.1),
+            Index::InsideTop { index } => Some(&self.top.get(index)?.as_ref()?.1),
             Index::Rest => self.rest.get(&key),
         }
     }
@@ -285,8 +264,8 @@ where
     pub fn get_mut(&mut self, key: Key) -> Option<&mut Value> {
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
-            Index::First => Some(&mut self.top.front_mut()?.as_mut()?.1),
-            Index::InsideTop { index } => Some(&mut self.top.get_mut(index.get())?.as_mut()?.1),
+            Index::First => Some(&mut self.first.as_mut()?.1),
+            Index::InsideTop { index } => Some(&mut self.top.get_mut(index)?.as_mut()?.1),
             Index::Rest => self.rest.get_mut(&key),
         }
     }
@@ -299,13 +278,11 @@ where
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
 
-            Index::First => self.remove_end(0),
+            Index::First => self.remove_end(true),
 
             Index::InsideTop { index } => {
-                let index = index.get();
-
                 let value = if index == self.top_count - 1 {
-                    self.remove_end(index)?
+                    self.remove_end(false)?
                 } else {
                     let (_, value) = mem::replace(self.top.get_mut(index)?, None)?;
                     value
@@ -371,7 +348,7 @@ mod tests {
     fn lens<Key, Value>(m: &TopMap<Key, Value>) -> [usize; 3] {
         [
             m.len(),
-            m.top.iter().filter(|&entry| entry.is_some()).count(),
+            (if m.first.is_some() { 1 } else { 0 } + m.top.iter().filter(|&entry| entry.is_some()).count()),
             m.rest.len(),
         ]
     }
