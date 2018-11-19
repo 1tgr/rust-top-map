@@ -149,12 +149,11 @@ where
 {
     fn insert_above_top(&mut self, distance: usize) -> &mut Option<(A::Key, A::Value)> {
         if let Some(new_count) = A::Array::size().checked_sub(distance) {
-            assert!(new_count <= self.top.len());
-
-            let drain_count = self.top.len() - new_count;
-            for _ in 0..drain_count {
-                if let Some((key, value)) = mem::replace(self.top.pop_back().unwrap(), None) {
-                    self.rest.insert(key, value);
+            if let Some(drain_count) = self.top.len().checked_sub(new_count) {
+                for _ in 0..drain_count {
+                    if let Some((key, value)) = mem::replace(self.top.pop_back().unwrap(), None) {
+                        self.rest.insert(key, value);
+                    }
                 }
             }
 
