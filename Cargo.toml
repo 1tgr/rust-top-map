@@ -6,6 +6,9 @@ authors = ["Tim Robinson <tim.g.robinson@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/1tgr/rust-top-map"
 
+[dependencies]
+fixed-vec-deque = { version = "0.1", git = "https://github.com/udoprog/fixed-vec-deque" }
+
 [dev-dependencies]
 criterion = "0.2"
 

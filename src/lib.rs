@@ -1,26 +1,47 @@
 #![deny(warnings)]
 #![deny(unused_extern_crates)]
 
-use std::collections::{BTreeMap, VecDeque};
+extern crate fixed_vec_deque;
+
+use std::collections::BTreeMap;
 use std::collections::btree_map;
 use std::fmt;
 use std::mem;
 use std::ops;
 
-pub struct TopMap<Key, Value> {
-    top_count: usize,
-    top: VecDeque<Option<(Key, Value)>>,
-    rest: BTreeMap<Key, Value>,
+use fixed_vec_deque::{Array as FvdArray, FixedVecDeque};
+
+pub trait Array {
+    type Key;
+    type Value;
+    type Array: FvdArray<Item = Option<(Self::Key, Self::Value)>>;
 }
 
-impl<Key, Value> TopMap<Key, Value>
+impl<Key, Value, A> Array for A
 where
-    Key: Ord,
+    A: FvdArray<Item = Option<(Key, Value)>>,
 {
-    pub fn new(top_count: usize) -> Self {
+    type Key = Key;
+    type Value = Value;
+    type Array = Self;
+}
+
+pub struct TopMap<A>
+where
+    A: Array,
+{
+    top: FixedVecDeque<A::Array>,
+    rest: BTreeMap<A::Key, A::Value>,
+}
+
+impl<A> TopMap<A>
+where
+    A: Array,
+    A::Key: Ord,
+{
+    pub fn new() -> Self {
         Self {
-            top_count,
-            top: VecDeque::new(),
+            top: FixedVecDeque::new(),
             rest: BTreeMap::new(),
         }
     }
@@ -40,22 +61,26 @@ enum Index {
     Rest,
 }
 
-pub enum Entry<'a, Key: 'a, Value: 'a> {
+pub enum Entry<'a, A: 'a>
+where
+    A: Array,
+{
     AboveTop {
-        key: Key,
-        map: &'a mut TopMap<Key, Value>,
+        key: A::Key,
+        map: &'a mut TopMap<A>,
         distance: usize,
     },
 
-    Vec(Key, &'a mut Option<(Key, Value)>),
-    BTreeMap(btree_map::Entry<'a, Key, Value>),
+    Vec(A::Key, &'a mut Option<(A::Key, A::Value)>),
+    BTreeMap(btree_map::Entry<'a, A::Key, A::Value>),
 }
 
-impl<'a, Key, Value> Entry<'a, Key, Value>
+impl<'a, A> Entry<'a, A>
 where
-    Key: Ord,
+    A: Array,
+    A::Key: Ord,
 {
-    fn insert(self, value: Value) -> Option<Value> {
+    fn insert(self, value: A::Value) -> Option<A::Value> {
         match self {
             Entry::AboveTop { key, map, distance } => {
                 *map.insert_above_top(distance) = Some((key, value));
@@ -72,7 +97,7 @@ where
         }
     }
 
-    pub fn or_insert(self, default: Value) -> &'a mut Value {
+    pub fn or_insert(self, default: A::Value) -> &'a mut A::Value {
         match self {
             Entry::AboveTop { key, map, distance } => {
                 &mut map.insert_above_top(distance).get_or_insert((key, default)).1
@@ -83,7 +108,7 @@ where
         }
     }
 
-    pub fn or_insert_with<F: FnOnce() -> Value>(self, default: F) -> &'a mut Value {
+    pub fn or_insert_with<F: FnOnce() -> A::Value>(self, default: F) -> &'a mut A::Value {
         match self {
             Entry::AboveTop { key, map, distance } => {
                 &mut map.insert_above_top(distance).get_or_insert_with(|| (key, default())).1
@@ -95,67 +120,82 @@ where
     }
 }
 
-impl<Key, Value> TopMap<Key, Value> {
+impl<A> TopMap<A>
+where
+    A: Array,
+{
     pub fn len(&self) -> usize {
         self.top.iter().filter(|&entry| entry.is_some()).count() + self.rest.len()
     }
 }
 
-fn ensure_index<T>(v: &mut VecDeque<Option<T>>, index: usize) -> &mut Option<T> {
+fn ensure_index<T, A>(v: &mut FixedVecDeque<A>, index: usize) -> &mut Option<T>
+where
+    A: FvdArray<Item = Option<T>>,
+{
     if let Some(count) = (index + 1).checked_sub(v.len()) {
-        v.reserve(count);
         for _ in 0..count {
-            v.push_back(None);
+            *v.push_back() = None;
         }
     }
 
     &mut v[index]
 }
 
-impl<Key, Value> TopMap<Key, Value>
+impl<A> TopMap<A>
 where
-    Key: Ord,
+    A: Array,
+    A::Key: Ord,
 {
-    fn insert_above_top(&mut self, distance: usize) -> &mut Option<(Key, Value)> {
-        if let Some(new_count) = self.top_count.checked_sub(distance) {
-            self.rest.extend(self.top.drain(new_count..).filter_map(|entry| entry));
+    fn insert_above_top(&mut self, distance: usize) -> &mut Option<(A::Key, A::Value)> {
+        if let Some(new_count) = A::Array::size().checked_sub(distance) {
+            assert!(new_count <= self.top.len());
 
-            for _ in 0..distance {
-                self.top.push_front(None);
+            let drain_count = self.top.len() - new_count;
+            for _ in 0..drain_count {
+                if let Some((key, value)) = mem::replace(self.top.pop_back().unwrap(), None) {
+                    self.rest.insert(key, value);
+                }
+            }
+
+            for _ in 0..distance - 1 {
+                *self.top.push_front() = None;
             }
         } else {
-            self.rest.extend(self.top.drain(..).filter_map(|entry| entry));
+            while let Some(entry) = self.top.pop_back() {
+                if let Some((key, value)) = mem::replace(entry, None) {
+                    self.rest.insert(key, value);
+                }
+            }
         }
 
-        self.top.push_front(None);
-        &mut self.top[0]
+        let front = self.top.push_front();
+        *front = None;
+        front
     }
 }
 
-impl<Key, Value> TopMap<Key, Value>
+impl<A> TopMap<A>
 where
-    Key: Copy + Ord,
-    isize: From<Key>,
+    A: Array,
+    A::Key: Copy + Ord,
+    isize: From<A::Key>,
 {
-    pub fn reserve(&mut self, additional: usize) {
-        self.top.reserve(additional)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (Key, &Value)> {
+    pub fn iter(&self) -> impl Iterator<Item = (A::Key, &A::Value)> {
         self.top
             .iter()
             .filter_map(|entry| entry.as_ref().map(|(key, value)| (*key, value)))
             .chain(self.rest.iter().map(|(key, value)| (*key, value)))
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Key, &mut Value)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (A::Key, &mut A::Value)> {
         self.top
             .iter_mut()
             .filter_map(|entry| entry.as_mut().map(|(key, value)| (*key, value)))
             .chain(self.rest.iter_mut().map(|(key, value)| (*key, value)))
     }
 
-    fn index(&self, key: Key) -> Index {
+    fn index(&self, key: A::Key) -> Index {
         let index = if let Some(ref min_entry) = self.top.front() {
             let &(min_key, _) = min_entry.as_ref().expect("top entry should be filled");
             isize::from(key) - isize::from(min_key)
@@ -164,7 +204,7 @@ where
         };
 
         if let Some(index) = positive(index) {
-            if index >= self.top_count {
+            if index >= A::Array::size() {
                 Index::Rest
             } else {
                 Index::InsideTop { index }
@@ -176,7 +216,7 @@ where
         }
     }
 
-    pub fn entry(&mut self, key: Key) -> Entry<Key, Value> {
+    pub fn entry(&mut self, key: A::Key) -> Entry<A> {
         match self.index(key) {
             Index::AboveTop { distance } => Entry::AboveTop {
                 key,
@@ -189,7 +229,7 @@ where
         }
     }
 
-    pub fn get(&self, key: Key) -> Option<&Value> {
+    pub fn get(&self, key: A::Key) -> Option<&A::Value> {
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
             Index::InsideTop { index } => Some(&self.top.get(index)?.as_ref()?.1),
@@ -197,7 +237,7 @@ where
         }
     }
 
-    pub fn get_mut(&mut self, key: Key) -> Option<&mut Value> {
+    pub fn get_mut(&mut self, key: A::Key) -> Option<&mut A::Value> {
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
             Index::InsideTop { index } => Some(&mut self.top.get_mut(index)?.as_mut()?.1),
@@ -205,55 +245,51 @@ where
         }
     }
 
-    pub fn insert(&mut self, key: Key, value: Value) -> Option<Value> {
+    pub fn insert(&mut self, key: A::Key, value: A::Value) -> Option<A::Value> {
         self.entry(key).insert(value)
     }
 
-    pub fn remove(&mut self, key: Key) -> Option<Value> {
+    pub fn remove(&mut self, key: A::Key) -> Option<A::Value> {
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
 
-            Index::InsideTop { index } => {
-                let value = if index == 0 || index == self.top_count - 1 {
-                    let (_, value) = self.top.remove(index)??;
+            Index::InsideTop { index: 0 } => {
+                let (_, value) = mem::replace(self.top.pop_front()?, None)?;
 
-                    if index == 0 {
-                        while let Some(None) = self.top.front() {
-                            self.top.pop_front();
-                        }
-                    }
+                while let Some(None) = self.top.front() {
+                    self.top.pop_front();
+                }
 
-                    let min_top_key = if let Some(&Some((min_top_key, _))) = self.top.front() {
-                        Some(min_top_key)
-                    } else if let Some((&rest_key, _)) = self.rest.iter().next() {
-                        let rest_value = self.rest.remove(&rest_key).unwrap();
-                        self.top.push_back(Some((rest_key, rest_value)));
-                        Some(rest_key)
-                    } else {
-                        None
-                    };
-
-                    if let Some(min_top_key) = min_top_key {
-                        while let Some((&key, _)) = self.rest.iter().next() {
-                            let index = positive(isize::from(key) - isize::from(min_top_key)).expect(
-                                "everything in the rest map should have an index higher than everything in the top vec",
-                            );
-
-                            if index >= self.top_count {
-                                break;
-                            }
-
-                            let value = self.rest.remove(&key).unwrap();
-                            *ensure_index(&mut self.top, index) = Some((key, value));
-                        }
-                    }
-
-                    value
+                let min_top_key = if let Some(&Some((min_top_key, _))) = self.top.front() {
+                    Some(min_top_key)
+                } else if let Some((&rest_key, _)) = self.rest.iter().next() {
+                    let rest_value = self.rest.remove(&rest_key).unwrap();
+                    *self.top.push_back() = Some((rest_key, rest_value));
+                    Some(rest_key)
                 } else {
-                    let (_, value) = mem::replace(self.top.get_mut(index)?, None)?;
-                    value
+                    None
                 };
 
+                if let Some(min_top_key) = min_top_key {
+                    while let Some((&key, _)) = self.rest.iter().next() {
+                        let index = positive(isize::from(key) - isize::from(min_top_key)).expect(
+                            "everything in the rest map should have an index higher than everything in the top vec",
+                        );
+
+                        if index >= A::Array::size() {
+                            break;
+                        }
+
+                        let value = self.rest.remove(&key).unwrap();
+                        *ensure_index(&mut self.top, index) = Some((key, value));
+                    }
+                }
+
+                Some(value)
+            }
+
+            Index::InsideTop { index } => {
+                let (_, value) = mem::replace(self.top.get_mut(index)?, None)?;
                 Some(value)
             }
 
@@ -262,36 +298,39 @@ where
     }
 }
 
-impl<Key, Value> ops::Index<Key> for TopMap<Key, Value>
+impl<A> ops::Index<A::Key> for TopMap<A>
 where
-    Key: Copy + Ord + fmt::Debug,
-    isize: From<Key>,
+    A: Array,
+    A::Key: Copy + Ord + fmt::Debug,
+    isize: From<A::Key>,
 {
-    type Output = Value;
+    type Output = A::Value;
 
-    fn index(&self, index: Key) -> &Value {
+    fn index(&self, index: A::Key) -> &A::Value {
         self.get(index)
             .unwrap_or_else(|| panic!("no item with key {:?}", index))
     }
 }
 
-impl<Key, Value> ops::IndexMut<Key> for TopMap<Key, Value>
+impl<A> ops::IndexMut<A::Key> for TopMap<A>
 where
-    Key: Copy + Ord + fmt::Debug,
-    isize: From<Key>,
+    A: Array,
+    A::Key: Copy + Ord + fmt::Debug,
+    isize: From<A::Key>,
 {
-    fn index_mut(&mut self, index: Key) -> &mut Value {
+    fn index_mut(&mut self, index: A::Key) -> &mut A::Value {
         self.get_mut(index)
             .unwrap_or_else(|| panic!("no item with key {:?}", index))
     }
 }
 
-impl<Key, Value> Extend<(Key, Value)> for TopMap<Key, Value>
+impl<A> Extend<(A::Key, A::Value)> for TopMap<A>
 where
-    Key: Copy + Ord,
-    isize: From<Key>,
+    A: Array,
+    A::Key: Copy + Ord,
+    isize: From<A::Key>,
 {
-    fn extend<T: IntoIterator<Item = (Key, Value)>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item = (A::Key, A::Value)>>(&mut self, iter: T) {
         for (key, value) in iter {
             self.insert(key, value);
         }
@@ -300,7 +339,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::TopMap;
+    use super::{Array, TopMap};
 
     static ITEMS: &[(isize, &'static str)] = &[
         (100, "a1"),
@@ -311,7 +350,10 @@ mod tests {
         (301, "c2"),
     ];
 
-    fn lens<Key, Value>(m: &TopMap<Key, Value>) -> [usize; 3] {
+    fn lens<A>(m: &TopMap<A>) -> [usize; 3]
+    where
+        A: Array,
+    {
         [
             m.len(),
             m.top.iter().filter(|&entry| entry.is_some()).count(),
@@ -321,7 +363,7 @@ mod tests {
 
     #[test]
     fn extend() {
-        let mut m = TopMap::new(10);
+        let mut m = TopMap::<[Option<(isize, &str)>; 10]>::new();
         m.extend(ITEMS.iter().cloned());
         assert_eq!([6, 2, 4], lens(&m));
 
@@ -334,7 +376,7 @@ mod tests {
 
     #[test]
     fn insert() {
-        let mut m = TopMap::new(10);
+        let mut m = TopMap::<[Option<(isize, &str)>; 10]>::new();
         assert_eq!(None, m.get(100isize));
         assert_eq!([0, 0, 0], lens(&m));
 
@@ -365,7 +407,7 @@ mod tests {
 
     #[test]
     fn remove() {
-        let mut m = TopMap::new(10);
+        let mut m = TopMap::<[Option<(isize, &str)>; 10]>::new();
         m.extend(ITEMS.iter().cloned());
         assert_eq!(None, m.remove(-1));
         assert_eq!([6, 2, 4], lens(&m));
@@ -397,61 +439,61 @@ mod tests {
 
     #[test]
     fn insert_remove_existing_m1() {
-        let mut m = TopMap::new(100);
+        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
         m.extend((0..1000).map(|n| (n as isize, n)));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
 
         let index = -1;
         assert_eq!(None, m.insert(index, index));
-        assert_eq!([1001, 100, 901], lens(&m));
+        assert_eq!([1001, 128, 873], lens(&m));
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
 
         assert_eq!(None, m.insert(index, index));
-        assert_eq!([1001, 100, 901], lens(&m));
+        assert_eq!([1001, 128, 873], lens(&m));
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
     }
 
     #[test]
     fn insert_remove_existing_m3() {
-        let mut m = TopMap::new(100);
+        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
         m.extend((0..1000).map(|n| (n as isize, n)));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
 
         let index = -3;
         assert_eq!(None, m.insert(index, index));
-        assert_eq!([1001, 98, 903], lens(&m));
+        assert_eq!([1001, 126, 875], lens(&m));
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
 
         assert_eq!(None, m.insert(index, index));
-        assert_eq!([1001, 98, 903], lens(&m));
+        assert_eq!([1001, 126, 875], lens(&m));
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
     }
 
     #[test]
     fn insert_remove_existing_m999() {
-        let mut m = TopMap::new(100);
+        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
         m.extend((0..1000).map(|n| (n as isize, n)));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
 
         let index = -999;
         assert_eq!(None, m.insert(index, index));
         assert_eq!([1001, 1, 1000], lens(&m));
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
 
         assert_eq!(None, m.insert(index, index));
         assert_eq!([1001, 1, 1000], lens(&m));
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 100, 900], lens(&m));
+        assert_eq!([1000, 128, 872], lens(&m));
     }
 }

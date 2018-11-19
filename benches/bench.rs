@@ -10,8 +10,7 @@ use top_map::TopMap;
 
 fn bench(c: &mut Criterion) {
     fn insert_remove_empty_top_map(b: &mut Bencher, &index: &isize) {
-        let mut m = TopMap::new(100);
-        m.reserve(1);
+        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
 
         b.iter(|| {
             m.insert(index, index);
@@ -29,7 +28,7 @@ fn bench(c: &mut Criterion) {
     }
 
     fn insert_remove_existing_top_map(b: &mut Bencher, &index: &isize) {
-        let mut m = TopMap::new(100);
+        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
         m.extend((0..1000).map(|n| (n as isize, n)));
 
         b.iter(|| {
@@ -49,7 +48,7 @@ fn bench(c: &mut Criterion) {
     }
 
     fn lookup_top_map(b: &mut Bencher, &index: &isize) {
-        let mut m = TopMap::new(100);
+        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
         m.extend((0..1000).map(|n| (n as isize, n)));
 
         b.iter(|| {
@@ -67,7 +66,7 @@ fn bench(c: &mut Criterion) {
     }
 
     fn increment_top_map(b: &mut Bencher, &index: &isize) {
-        let mut m = TopMap::new(100);
+        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
         m.extend((0..1000).map(|n| (n as isize, n)));
 
         b.iter(|| {
