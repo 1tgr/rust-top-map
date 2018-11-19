@@ -195,6 +195,11 @@ where
             .chain(self.rest.iter_mut().map(|(key, value)| (*key, value)))
     }
 
+    pub fn clear(&mut self) {
+        self.top.clear();
+        self.rest.clear();
+    }
+
     fn index(&self, key: A::Key) -> Index {
         let index = if let Some(ref min_entry) = self.top.front() {
             let &(min_key, _) = min_entry.as_ref().expect("top entry should be filled");
