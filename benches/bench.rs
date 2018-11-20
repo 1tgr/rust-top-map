@@ -83,6 +83,16 @@ fn bench(c: &mut Criterion) {
         });
     }
 
+    fn extend_in_direction(b: &mut Bencher, &direction: &i8) {
+        b.iter(|| {
+            let _: TopMap<[Option<(isize, isize)>; 128]> = if direction > 0 {
+                (0..1000).map(|n| (n as isize, n)).collect()
+            } else {
+                (0..1000).rev().map(|n| (n as isize, n)).collect()
+            };
+        });
+    }
+
     for &n in [0, 50, 99, 100, 500, 999].iter() {
         c.bench_functions(
             &n.to_string(),
@@ -99,6 +109,16 @@ fn bench(c: &mut Criterion) {
             n,
         );
     }
+
+    c.bench_function_over_inputs("insert_remove_empty_top_map", insert_remove_empty_top_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("insert_remove_existing_top_map", insert_remove_existing_top_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("lookup_top_map", lookup_top_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("increment_top_map", increment_top_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("insert_remove_empty_btree_map", insert_remove_empty_btree_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("insert_remove_existing_btree_map", insert_remove_existing_btree_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("lookup_btree_map", lookup_btree_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("increment_btree_map", increment_btree_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs("extend_in_direction", extend_in_direction, vec![-1, 1]);
 }
 
 criterion_group!(benches, bench);
