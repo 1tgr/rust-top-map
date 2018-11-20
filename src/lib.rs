@@ -6,6 +6,7 @@ extern crate fixed_vec_deque;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
 use std::fmt;
+use std::iter::FromIterator;
 use std::mem;
 use std::ops;
 
@@ -341,6 +342,19 @@ where
     }
 }
 
+impl<A> FromIterator<(A::Key, A::Value)> for TopMap<A>
+where
+    A: Array,
+    A::Key: Copy + Ord,
+    isize: From<A::Key>,
+{
+    fn from_iter<T: IntoIterator<Item = (A::Key, A::Value)>>(iter: T) -> Self {
+        let mut m = TopMap::new();
+        m.extend(iter);
+        m
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Array, TopMap};
@@ -366,9 +380,8 @@ mod tests {
     }
 
     #[test]
-    fn extend() {
-        let mut m = TopMap::<[Option<(isize, &str)>; 10]>::new();
-        m.extend(ITEMS.iter().cloned());
+    fn collect() {
+        let m = ITEMS.iter().cloned().collect::<TopMap<[Option<(isize, &str)>; 10]>>();
         assert_eq!([6, 2, 4], lens(&m));
 
         let items = m.iter()
@@ -411,8 +424,7 @@ mod tests {
 
     #[test]
     fn remove() {
-        let mut m = TopMap::<[Option<(isize, &str)>; 10]>::new();
-        m.extend(ITEMS.iter().cloned());
+        let mut m = ITEMS.iter().cloned().collect::<TopMap<[Option<(isize, &str)>; 10]>>();
         assert_eq!(None, m.remove(-1));
         assert_eq!([6, 2, 4], lens(&m));
 
@@ -443,8 +455,10 @@ mod tests {
 
     #[test]
     fn insert_remove_existing_m1() {
-        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let mut m = (0..1000)
+            .map(|n| (n as isize, n))
+            .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
+
         assert_eq!([1000, 128, 872], lens(&m));
 
         let index = -1;
@@ -463,8 +477,10 @@ mod tests {
 
     #[test]
     fn insert_remove_existing_m3() {
-        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let mut m = (0..1000)
+            .map(|n| (n as isize, n))
+            .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
+
         assert_eq!([1000, 128, 872], lens(&m));
 
         let index = -3;
@@ -483,8 +499,10 @@ mod tests {
 
     #[test]
     fn insert_remove_existing_m999() {
-        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let mut m = (0..1000)
+            .map(|n| (n as isize, n))
+            .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
+
         assert_eq!([1000, 128, 872], lens(&m));
 
         let index = -999;

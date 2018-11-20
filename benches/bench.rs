@@ -28,8 +28,9 @@ fn bench(c: &mut Criterion) {
     }
 
     fn insert_remove_existing_top_map(b: &mut Bencher, &index: &isize) {
-        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let mut m = (0..1000)
+            .map(|n| (n as isize, n))
+            .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
 
         b.iter(|| {
             m.insert(index, index);
@@ -38,8 +39,7 @@ fn bench(c: &mut Criterion) {
     }
 
     fn insert_remove_existing_btree_map(b: &mut Bencher, &index: &isize) {
-        let mut m = BTreeMap::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let mut m = (0..1000).map(|n| (n as isize, n)).collect::<BTreeMap<isize, isize>>();
 
         b.iter(|| {
             m.insert(index, index);
@@ -48,8 +48,9 @@ fn bench(c: &mut Criterion) {
     }
 
     fn lookup_top_map(b: &mut Bencher, &index: &isize) {
-        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let m = (0..1000)
+            .map(|n| (n as isize, n))
+            .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
 
         b.iter(|| {
             assert_eq!(index, m[index]);
@@ -57,8 +58,7 @@ fn bench(c: &mut Criterion) {
     }
 
     fn lookup_btree_map(b: &mut Bencher, &index: &isize) {
-        let mut m = BTreeMap::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let m = (0..1000).map(|n| (n as isize, n)).collect::<BTreeMap<isize, isize>>();
 
         b.iter(|| {
             assert_eq!(index, m[&index]);
@@ -66,8 +66,9 @@ fn bench(c: &mut Criterion) {
     }
 
     fn increment_top_map(b: &mut Bencher, &index: &isize) {
-        let mut m = TopMap::<[Option<(isize, isize)>; 128]>::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let mut m = (0..1000)
+            .map(|n| (n as isize, n))
+            .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
 
         b.iter(|| {
             m[index] += 1;
@@ -75,8 +76,7 @@ fn bench(c: &mut Criterion) {
     }
 
     fn increment_btree_map(b: &mut Bencher, &index: &isize) {
-        let mut m = BTreeMap::new();
-        m.extend((0..1000).map(|n| (n as isize, n)));
+        let mut m = (0..1000).map(|n| (n as isize, n)).collect::<BTreeMap<isize, isize>>();
 
         b.iter(|| {
             *m.get_mut(&index).unwrap() += 1;
