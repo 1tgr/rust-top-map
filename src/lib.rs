@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map;
 use std::fmt;
 use std::iter::FromIterator;
+use std::marker::PhantomData;
 use std::mem;
 use std::ops;
 
@@ -16,6 +17,9 @@ pub trait Array {
     type Key;
     type Value;
     type Array: FvdArray<Item = Option<(Self::Key, Self::Value)>>;
+
+    fn min_size() -> usize;
+    fn max_size() -> usize;
 }
 
 impl<Key, Value, A> Array for A
@@ -25,6 +29,14 @@ where
     type Key = Key;
     type Value = Value;
     type Array = Self;
+
+    fn min_size() -> usize {
+        A::size() / 2
+    }
+
+    fn max_size() -> usize {
+        A::size()
+    }
 }
 
 pub struct TopMap<A>
@@ -56,9 +68,10 @@ fn positive(i: isize) -> Option<usize> {
     }
 }
 
-enum Index {
+enum Index<'a> {
     AboveTop { distance: usize },
-    InsideTop { index: usize },
+    InsideTop { index: usize, _pd: PhantomData<&'a ()> },
+    OutsideTop { index: usize, _pd: PhantomData<&'a ()> },
     Rest,
 }
 
@@ -149,7 +162,7 @@ where
     A::Key: Ord,
 {
     fn insert_above_top(&mut self, distance: usize) -> &mut Option<(A::Key, A::Value)> {
-        if let Some(new_count) = A::Array::size().checked_sub(distance) {
+        if let Some(new_count) = A::max_size().checked_sub(distance) {
             if let Some(drain_count) = self.top.len().checked_sub(new_count) {
                 for _ in 0..drain_count {
                     if let Some((key, value)) = mem::replace(self.top.pop_back().unwrap(), None) {
@@ -200,19 +213,38 @@ where
         self.rest.clear();
     }
 
+    pub fn shrink_to_fit(&mut self) {
+        while self.top.len() > A::min_size() {
+            if let Some((key, value)) = mem::replace(self.top.pop_back().unwrap(), None) {
+                self.rest.insert(key, value);
+            }
+        }
+    }
+
     fn index(&self, key: A::Key) -> Index {
         let index = if let Some(ref min_entry) = self.top.front() {
             let &(min_key, _) = min_entry.as_ref().expect("top entry should be filled");
             isize::from(key) - isize::from(min_key)
         } else {
-            0
+            return Index::OutsideTop {
+                index: 0,
+                _pd: PhantomData,
+            };
         };
 
         if let Some(index) = positive(index) {
-            if index >= A::Array::size() {
+            if index >= A::max_size() {
                 Index::Rest
+            } else if index >= self.top.len() {
+                Index::OutsideTop {
+                    index,
+                    _pd: PhantomData,
+                }
             } else {
-                Index::InsideTop { index }
+                Index::InsideTop {
+                    index,
+                    _pd: PhantomData,
+                }
             }
         } else {
             Index::AboveTop {
@@ -229,7 +261,8 @@ where
                 distance,
             },
 
-            Index::InsideTop { index } => Entry::Vec(key, ensure_index(&mut self.top, index)),
+            Index::InsideTop { index, .. } => Entry::Vec(key, &mut self.top[index]),
+            Index::OutsideTop { index, .. } => Entry::Vec(key, ensure_index(&mut self.top, index)),
             Index::Rest => Entry::BTreeMap(self.rest.entry(key)),
         }
     }
@@ -237,16 +270,16 @@ where
     pub fn get(&self, key: A::Key) -> Option<&A::Value> {
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
-            Index::InsideTop { index } => Some(&self.top.get(index)?.as_ref()?.1),
-            Index::Rest => self.rest.get(&key),
+            Index::InsideTop { index, .. } => Some(&self.top[index].as_ref()?.1),
+            Index::OutsideTop { .. } | Index::Rest => self.rest.get(&key),
         }
     }
 
     pub fn get_mut(&mut self, key: A::Key) -> Option<&mut A::Value> {
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
-            Index::InsideTop { index } => Some(&mut self.top.get_mut(index)?.as_mut()?.1),
-            Index::Rest => self.rest.get_mut(&key),
+            Index::InsideTop { index, .. } => Some(&mut self.top[index].as_mut()?.1),
+            Index::OutsideTop { .. } | Index::Rest => self.rest.get_mut(&key),
         }
     }
 
@@ -258,47 +291,51 @@ where
         match self.index(key) {
             Index::AboveTop { distance: _ } => None,
 
-            Index::InsideTop { index: 0 } => {
-                let (_, value) = mem::replace(self.top.pop_front()?, None)?;
+            Index::InsideTop { index: 0, .. } => {
+                let (_, value) = mem::replace(self.top.pop_front().unwrap(), None)?;
 
                 while let Some(None) = self.top.front() {
                     self.top.pop_front();
                 }
 
-                let min_top_key = if let Some(&Some((min_top_key, _))) = self.top.front() {
-                    Some(min_top_key)
-                } else if let Some((&rest_key, _)) = self.rest.iter().next() {
-                    let rest_value = self.rest.remove(&rest_key).unwrap();
-                    *self.top.push_back() = Some((rest_key, rest_value));
-                    Some(rest_key)
-                } else {
-                    None
-                };
+                if self.top.len() <= A::min_size() {
+                    let min_top_key = if let Some(&Some((min_top_key, _))) = self.top.front() {
+                        Some(min_top_key)
+                    } else if let Some((&rest_key, _)) = self.rest.iter().next() {
+                        let rest_value = self.rest.remove(&rest_key).unwrap();
+                        *self.top.push_back() = Some((rest_key, rest_value));
+                        Some(rest_key)
+                    } else {
+                        None
+                    };
 
-                if let Some(min_top_key) = min_top_key {
-                    while let Some((&key, _)) = self.rest.iter().next() {
-                        let index = positive(isize::from(key) - isize::from(min_top_key)).expect(
-                            "everything in the rest map should have an index higher than everything in the top vec",
-                        );
+                    if let Some(min_top_key) = min_top_key {
+                        while let Some((&key, _)) = self.rest.iter().next() {
+                            let index = positive(isize::from(key) - isize::from(min_top_key)).expect(
+                                "everything in the rest map should have an index higher than everything in the top vec",
+                            );
 
-                        if index >= A::Array::size() {
-                            break;
+                            assert!(A::min_size() <= A::max_size());
+
+                            if index >= A::min_size() {
+                                break;
+                            }
+
+                            let value = self.rest.remove(&key).unwrap();
+                            *ensure_index(&mut self.top, index) = Some((key, value));
                         }
-
-                        let value = self.rest.remove(&key).unwrap();
-                        *ensure_index(&mut self.top, index) = Some((key, value));
                     }
                 }
 
                 Some(value)
             }
 
-            Index::InsideTop { index } => {
-                let (_, value) = mem::replace(self.top.get_mut(index)?, None)?;
+            Index::InsideTop { index, .. } => {
+                let (_, value) = mem::replace(&mut self.top[index], None)?;
                 Some(value)
             }
 
-            Index::Rest => self.rest.remove(&key),
+            Index::OutsideTop { .. } | Index::Rest => self.rest.remove(&key),
         }
     }
 }
@@ -460,19 +497,28 @@ mod tests {
             .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
 
         assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!(127, m[127]);
 
         let index = -1;
         assert_eq!(None, m.insert(index, index));
         assert_eq!([1001, 128, 873], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!([1000, 127, 873], lens(&m));
+        assert_eq!(127, m[127]);
+
+        m.shrink_to_fit();
+        assert_eq!([1000, 64, 936], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(None, m.insert(index, index));
-        assert_eq!([1001, 128, 873], lens(&m));
+        assert_eq!([1001, 65, 936], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!([1000, 64, 936], lens(&m));
+        assert_eq!(127, m[127]);
     }
 
     #[test]
@@ -482,19 +528,28 @@ mod tests {
             .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
 
         assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!(127, m[127]);
 
         let index = -3;
         assert_eq!(None, m.insert(index, index));
         assert_eq!([1001, 126, 875], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!([1000, 125, 875], lens(&m));
+        assert_eq!(127, m[127]);
+
+        m.shrink_to_fit();
+        assert_eq!([1000, 64, 936], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(None, m.insert(index, index));
-        assert_eq!([1001, 126, 875], lens(&m));
+        assert_eq!([1001, 65, 936], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!([1000, 64, 936], lens(&m));
+        assert_eq!(127, m[127]);
     }
 
     #[test]
@@ -504,18 +559,27 @@ mod tests {
             .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
 
         assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!(127, m[127]);
 
         let index = -999;
         assert_eq!(None, m.insert(index, index));
         assert_eq!([1001, 1, 1000], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!([1000, 64, 936], lens(&m));
+        assert_eq!(127, m[127]);
+
+        m.shrink_to_fit();
+        assert_eq!([1000, 64, 936], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(None, m.insert(index, index));
         assert_eq!([1001, 1, 1000], lens(&m));
+        assert_eq!(127, m[127]);
 
         assert_eq!(Some(index), m.remove(index));
-        assert_eq!([1000, 128, 872], lens(&m));
+        assert_eq!([1000, 64, 936], lens(&m));
+        assert_eq!(127, m[127]);
     }
 }

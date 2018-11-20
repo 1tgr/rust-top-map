@@ -32,6 +32,8 @@ fn bench(c: &mut Criterion) {
             .map(|n| (n as isize, n))
             .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
 
+        m.shrink_to_fit();
+
         b.iter(|| {
             m.insert(index, index);
             m.remove(index);
@@ -48,9 +50,11 @@ fn bench(c: &mut Criterion) {
     }
 
     fn lookup_top_map(b: &mut Bencher, &index: &isize) {
-        let m = (0..1000)
+        let mut m = (0..1000)
             .map(|n| (n as isize, n))
             .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
+
+        m.shrink_to_fit();
 
         b.iter(|| {
             assert_eq!(index, m[index]);
@@ -69,6 +73,8 @@ fn bench(c: &mut Criterion) {
         let mut m = (0..1000)
             .map(|n| (n as isize, n))
             .collect::<TopMap<[Option<(isize, isize)>; 128]>>();
+
+        m.shrink_to_fit();
 
         b.iter(|| {
             m[index] += 1;
@@ -93,7 +99,9 @@ fn bench(c: &mut Criterion) {
         });
     }
 
-    for &n in [0, 50, 99, 100, 500, 999].iter() {
+    let indices = vec![0, 50, 63, 64, 65, 127, 128, 129, 999];
+
+    for &n in indices.iter() {
         c.bench_functions(
             &n.to_string(),
             vec![
@@ -110,14 +118,30 @@ fn bench(c: &mut Criterion) {
         );
     }
 
-    c.bench_function_over_inputs("insert_remove_empty_top_map", insert_remove_empty_top_map, vec![0, 50, 99, 100, 500, 999]);
-    c.bench_function_over_inputs("insert_remove_existing_top_map", insert_remove_existing_top_map, vec![0, 50, 99, 100, 500, 999]);
-    c.bench_function_over_inputs("lookup_top_map", lookup_top_map, vec![0, 50, 99, 100, 500, 999]);
-    c.bench_function_over_inputs("increment_top_map", increment_top_map, vec![0, 50, 99, 100, 500, 999]);
-    c.bench_function_over_inputs("insert_remove_empty_btree_map", insert_remove_empty_btree_map, vec![0, 50, 99, 100, 500, 999]);
-    c.bench_function_over_inputs("insert_remove_existing_btree_map", insert_remove_existing_btree_map, vec![0, 50, 99, 100, 500, 999]);
-    c.bench_function_over_inputs("lookup_btree_map", lookup_btree_map, vec![0, 50, 99, 100, 500, 999]);
-    c.bench_function_over_inputs("increment_btree_map", increment_btree_map, vec![0, 50, 99, 100, 500, 999]);
+    c.bench_function_over_inputs(
+        "insert_remove_empty_top_map",
+        insert_remove_empty_top_map,
+        indices.clone(),
+    );
+    c.bench_function_over_inputs(
+        "insert_remove_existing_top_map",
+        insert_remove_existing_top_map,
+        indices.clone(),
+    );
+    c.bench_function_over_inputs("lookup_top_map", lookup_top_map, indices.clone());
+    c.bench_function_over_inputs("increment_top_map", increment_top_map, indices.clone());
+    c.bench_function_over_inputs(
+        "insert_remove_empty_btree_map",
+        insert_remove_empty_btree_map,
+        indices.clone(),
+    );
+    c.bench_function_over_inputs(
+        "insert_remove_existing_btree_map",
+        insert_remove_existing_btree_map,
+        indices.clone(),
+    );
+    c.bench_function_over_inputs("lookup_btree_map", lookup_btree_map, indices.clone());
+    c.bench_function_over_inputs("increment_btree_map", increment_btree_map, indices.clone());
     c.bench_function_over_inputs("extend_in_direction", extend_in_direction, vec![-1, 1]);
 }
 
