@@ -11,6 +11,7 @@ fixed-vec-deque = { version = "0.1", git = "https://github.com/udoprog/fixed-vec
 
 [dev-dependencies]
 criterion = "0.2"
+quickcheck = "0.7"
 
 [[bench]]
 name = "bench"

@@ -3,6 +3,9 @@
 
 extern crate fixed_vec_deque;
 
+#[cfg(test)]
+extern crate quickcheck;
+
 use std::collections::BTreeMap;
 use std::collections::btree_map;
 use std::fmt;
@@ -262,7 +265,17 @@ where
             },
 
             Index::InsideTop { index, .. } => Entry::Vec(key, &mut self.top[index]),
-            Index::OutsideTop { index, .. } => Entry::Vec(key, ensure_index(&mut self.top, index)),
+
+            Index::OutsideTop { index, .. } => {
+                if let Some((&rest_key, _)) = self.rest.iter().next() {
+                    if key >= rest_key {
+                        return Entry::BTreeMap(self.rest.entry(key));
+                    }
+                }
+
+                Entry::Vec(key, ensure_index(&mut self.top, index))
+            },
+
             Index::Rest => Entry::BTreeMap(self.rest.entry(key)),
         }
     }
@@ -394,6 +407,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use quickcheck::{quickcheck, Arbitrary, Gen};
+
     use super::{Array, TopMap};
 
     static ITEMS: &[(isize, &'static str)] = &[
@@ -581,5 +598,81 @@ mod tests {
         assert_eq!(Some(index), m.remove(index));
         assert_eq!([1000, 64, 936], lens(&m));
         assert_eq!(127, m[127]);
+    }
+
+    #[test]
+    fn insert_outside_top() {
+        let mut map: TopMap<[Option<(isize, isize)>; 128]> = TopMap::new();
+        assert_eq!(None, map.insert(-63, 93));
+        assert_eq!(93, map[-63]);
+
+        assert_eq!(None, map.insert(87, 14));
+        assert_eq!(93, map[-63]);
+        assert_eq!(14, map[87]);
+
+        assert_eq!(None, map.insert(0, 45));
+        assert_eq!(93, map[-63]);
+        assert_eq!(14, map[87]);
+        assert_eq!(45, map[0]);
+
+        assert_eq!(Some(93), map.remove(-63));
+        assert_eq!(None, map.get(-63));
+        assert_eq!(14, map[87]);
+        assert_eq!(45, map[0]);
+
+        assert_eq!(Some(14), map.insert(87, 14));
+        assert_eq!(None, map.get(-63));
+        assert_eq!(14, map[87]);
+        assert_eq!(45, map[0]);
+    }
+
+    #[derive(Clone, Debug)]
+    enum Action<Key, Value> {
+        Insert { key: Key, value: Value },
+        Remove { key: Key },
+        Get { key: Key },
+    }
+
+    impl<Key: Arbitrary, Value: Arbitrary> Arbitrary for Action<Key, Value> {
+        fn arbitrary<G: Gen>(g: &mut G) -> Self {
+            match u8::arbitrary(g) % 3 {
+                0 => Action::Insert {
+                    key: Key::arbitrary(g),
+                    value: Value::arbitrary(g),
+                },
+                1 => Action::Remove { key: Key::arbitrary(g) },
+                2 => Action::Get { key: Key::arbitrary(g) },
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn matches_btree_map(actions: Vec<Action<isize, isize>>) -> bool {
+        let mut map1 = BTreeMap::new();
+        let mut map2: TopMap<[Option<(isize, isize)>; 128]> = TopMap::new();
+
+        for action in actions {
+            match action {
+                Action::Insert { key, value } => if map1.insert(key, value) != map2.insert(key, value) {
+                    return false;
+                },
+
+                Action::Remove { key } => if map1.remove(&key) != map2.remove(key) {
+                    return false;
+                },
+
+                Action::Get { key } => if map1.get(&key) != map2.get(key) {
+                    return false;
+                },
+            }
+        }
+
+        true
+    }
+
+    quickcheck! {
+        fn qc_matches_btree_map(actions: Vec<Action<isize, isize>>) -> bool {
+            matches_btree_map(actions)
+        }
     }
 }
